@@ -131,7 +131,16 @@ app.post('/api/login', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT id, email, name, password_hash FROM public.users WHERE email = $1',
+      `SELECT
+        u.id,
+        u.email,
+        u.name,
+        u.password_hash,
+        s.score_total
+    FROM public.users u
+    LEFT JOIN public.scores s
+        ON s.user_id = u.id
+    WHERE u.email = $1`,
       [normalizedEmail]
     );
 
@@ -148,14 +157,97 @@ app.post('/api/login', async (req, res) => {
 
     const token = signToken({ id: user.id, email: user.email, name: user.name });
 
-    res.json({ success: true, token, user: { id: user.id, email: user.email, name: user.name } });
+    res.json({
+        success: true,
+        token,
+        user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            score: {
+                total: user.score_total ?? 0
+            }
+        }
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/me', authenticateToken, (req, res) => {
-  res.json({ success: true, user: req.user });
+app.get('/api/me', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT
+                u.id,
+                u.name,
+                u.email,
+                COALESCE(s.score_total, 0) AS score_total
+            FROM public.users u
+            LEFT JOIN public.scores s
+                ON s.user_id = u.id
+            WHERE u.id = $1
+        `, [req.user.id]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "User not found"
+            });
+        }
+
+        const user = result.rows[0];
+
+        res.json({
+            success: true,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                score: {
+                    total: user.score_total
+                }
+            }
+        });
+
+    } catch (err) {
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+    }
+});
+
+app.put('/api/score', authenticateToken, async (req, res) => {
+    const { score_total } = req.body;
+
+    if (score_total === undefined || isNaN(score_total)) {
+        return res.status(400).json({
+            success: false,
+            error: "score_total is required"
+        });
+    }
+
+    try {
+        const result = await pool.query(`
+            INSERT INTO public.scores(user_id, score_total)
+            VALUES($1, $2)
+            ON CONFLICT(user_id)
+            DO UPDATE
+            SET score_total = EXCLUDED.score_total
+            RETURNING *
+        `, [req.user.id, score_total]);
+
+        res.json({
+            success: true,
+            score: result.rows[0]
+        });
+
+    } catch (err) {
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+    }
 });
 
 app.get('/api/scores', authenticateToken, async (req, res) => {
