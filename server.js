@@ -186,7 +186,7 @@ app.get('/api/me', authenticateToken, async (req, res) => {
             LEFT JOIN public.scores s
                 ON s.user_id = u.id
             WHERE u.id = $1
-        `, [req.user.id]);
+        `, [req.user.sub]);
 
         if (result.rows.length === 0) {
             return res.status(404).json({
