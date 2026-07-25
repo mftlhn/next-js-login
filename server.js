@@ -235,18 +235,40 @@ app.put('/api/score', authenticateToken, async (req, res) => {
     }
 
     try {
-        const result = await pool.query(`
+        // Insert / Update score
+        await pool.query(`
             INSERT INTO public.scores(user_id, score_total)
             VALUES($1, $2)
             ON CONFLICT(user_id)
             DO UPDATE
             SET score_total = EXCLUDED.score_total
-            RETURNING *
         `, [req.user.sub, score_total]);
+
+        // Ambil data user beserta score terbaru
+        const result = await pool.query(`
+            SELECT
+                u.id,
+                u.name,
+                u.email,
+                COALESCE(s.score_total, 0) AS score_total
+            FROM public.users u
+            LEFT JOIN public.scores s
+                ON s.user_id = u.id
+            WHERE u.id = $1
+        `, [req.user.sub]);
+
+        const user = result.rows[0];
 
         res.json({
             success: true,
-            score: result.rows[0]
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                score: {
+                    score_total: user.score_total
+                }
+            }
         });
 
     } catch (err) {
