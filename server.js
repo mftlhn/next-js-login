@@ -224,7 +224,7 @@ app.post('/api/logout', authenticateToken, (req, res) => {
     });
 });
 
-app.put('/api/score', authenticateToken, async (req, res) => {
+app.post('/api/score', authenticateToken, async (req, res) => {
     const { score_total } = req.body;
 
     if (score_total === undefined || isNaN(score_total)) {
