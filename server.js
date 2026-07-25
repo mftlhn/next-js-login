@@ -165,7 +165,7 @@ app.post('/api/login', async (req, res) => {
             name: user.name,
             email: user.email,
             score: {
-                total: user.score_total ?? 0
+                score_total: user.score_total ?? 0
             }
         }
     });
@@ -204,7 +204,7 @@ app.get('/api/me', authenticateToken, async (req, res) => {
                 name: user.name,
                 email: user.email,
                 score: {
-                    total: user.score_total
+                    score_total: user.score_total
                 }
             }
         });
