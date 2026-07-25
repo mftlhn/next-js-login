@@ -21,7 +21,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 let dbInitialized = false;
 
 function signToken(user) {
-  return jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET, { expiresIn: '1h' });
+  return jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET);
 }
 
 function authenticateToken(req, res, next) {
