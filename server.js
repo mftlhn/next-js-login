@@ -94,9 +94,9 @@ app.get('/health', async (req, res) => {
 });
 
 app.post('/api/register', async (req, res) => {
-  const { email, password } = req.body || {};
+  const { name, email, password } = req.body || {};
 
-  if (!email || !password) {
+  if (!name || !email || !password) {
     return res.status(400).json({ error: 'Email and password are required' });
   }
 
@@ -106,7 +106,7 @@ app.post('/api/register', async (req, res) => {
   try {
     const result = await pool.query(
       'INSERT INTO public.users (name, email, password_hash) VALUES ($1, $2) RETURNING id, email, name',
-      [normalizedEmail, passwordHash]
+      [ name, normalizedEmail, passwordHash]
     );
 
     const token = signToken({ id: result.rows[0].id, email: result.rows[0].email, name: result.rows[0].name });
