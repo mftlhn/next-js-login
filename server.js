@@ -242,7 +242,7 @@ app.put('/api/score', authenticateToken, async (req, res) => {
             DO UPDATE
             SET score_total = EXCLUDED.score_total
             RETURNING *
-        `, [req.user.id, score_total]);
+        `, [req.user.sub, score_total]);
 
         res.json({
             success: true,
