@@ -105,11 +105,11 @@ app.post('/api/register', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'INSERT INTO public.users (email, password_hash) VALUES ($1, $2) RETURNING id, email',
+      'INSERT INTO public.users (name, email, password_hash) VALUES ($1, $2) RETURNING id, email, name',
       [normalizedEmail, passwordHash]
     );
 
-    const token = signToken({ id: result.rows[0].id, email: result.rows[0].email });
+    const token = signToken({ id: result.rows[0].id, email: result.rows[0].email, name: result.rows[0].name });
 
     res.status(201).json({ success: true, token, user: result.rows[0] });
   } catch (error) {
