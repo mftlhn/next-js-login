@@ -217,6 +217,13 @@ app.get('/api/me', authenticateToken, async (req, res) => {
     }
 });
 
+app.post('/api/logout', authenticateToken, (req, res) => {
+    res.json({
+        success: true,
+        message: "Logout successful"
+    });
+});
+
 app.put('/api/score', authenticateToken, async (req, res) => {
     const { score_total } = req.body;
 
