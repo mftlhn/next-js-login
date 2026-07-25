@@ -105,7 +105,7 @@ app.post('/api/register', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'INSERT INTO public.users (name, email, password_hash) VALUES ($1, $2) RETURNING id, email, name',
+      'INSERT INTO public.users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, email, name',
       [ name, normalizedEmail, passwordHash]
     );
 
