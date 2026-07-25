@@ -18,6 +18,7 @@ const pool = new Pool({
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+let dbInitialized = false;
 
 function signToken(user) {
   return jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET, { expiresIn: '1h' });
@@ -46,6 +47,10 @@ pool.on('error', (err) => {
 });
 
 async function initDatabase() {
+  if (dbInitialized) {
+    return;
+  }
+
   await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.users (
@@ -71,6 +76,8 @@ async function initDatabase() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+
+  dbInitialized = true;
 }
 
 app.get('/', (req, res) => {
@@ -168,13 +175,24 @@ app.get('/api/scores', authenticateToken, async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-initDatabase()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  })
-  .catch((error) => {
+async function startServer() {
+  try {
+    await initDatabase();
+
+    if (require.main === module) {
+      app.listen(PORT, () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+      });
+    }
+  } catch (error) {
     console.error('Failed to initialize database:', error);
-    process.exit(1);
-  });
+
+    if (require.main === module) {
+      process.exit(1);
+    }
+  }
+}
+
+startServer();
+
+module.exports = app;
