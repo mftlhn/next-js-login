@@ -398,9 +398,9 @@ app.post('/api/logout', authenticateToken, (req, res) => {
     });
 });
 
-app.post('/api/score', authenticateToken, requireAdmin, async (req, res) => {
-  const { score_total, user_id } = req.body || {};
-  const targetUserId = user_id || req.user.sub;
+app.post('/api/score', authenticateToken, async (req, res) => {
+  const { score_total } = req.body || {};
+  const targetUserId = req.user.sub;
   const scoreTotal = Number(score_total);
 
   if (!Number.isSafeInteger(scoreTotal) || scoreTotal < 0) {
