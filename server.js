@@ -4,6 +4,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
+const adminDashboard = require('./admin-dashboard');
 
 const app = express();
 app.use(express.json());
@@ -22,7 +23,11 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 let dbInitialization;
 
 function signToken(user) {
-  return jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET);
+  return jwt.sign(
+    { sub: user.id, email: user.email, role: user.role },
+    JWT_SECRET,
+    { expiresIn: '1h' }
+  );
 }
 
 function authenticateToken(req, res, next) {
@@ -43,6 +48,52 @@ function authenticateToken(req, res, next) {
   });
 }
 
+async function requireAdmin(req, res, next) {
+  try {
+    const result = await pool.query(
+      'SELECT role FROM public.users WHERE id = $1',
+      [req.user.sub]
+    );
+
+    if (result.rows[0]?.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, error: 'Admin access required' });
+    }
+
+    next();
+  } catch (error) {
+    console.error('Admin role check failed:', error);
+    res.status(500).json({ success: false, error: 'Unable to verify admin access' });
+  }
+}
+
+function validateVoucher(body) {
+  const code = typeof body.code === 'string' ? body.code.trim().toUpperCase() : '';
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  const description = typeof body.description === 'string' ? body.description.trim() : '';
+  const valueAmount = Number(body.value_amount);
+  const pointsCost = Number(body.points_cost);
+
+  if (
+    !/^[A-Z0-9][A-Z0-9_-]{2,49}$/.test(code) ||
+    !title ||
+    !description ||
+    !Number.isSafeInteger(valueAmount) || valueAmount <= 0 ||
+    !Number.isSafeInteger(pointsCost) || pointsCost <= 0 ||
+    (body.is_active !== undefined && typeof body.is_active !== 'boolean')
+  ) {
+    return null;
+  }
+
+  return {
+    code,
+    title,
+    description,
+    valueAmount,
+    pointsCost,
+    isActive: body.is_active ?? true,
+  };
+}
+
 pool.on('error', (err) => {
   console.error('Unexpected PG client error', err);
 });
@@ -54,10 +105,30 @@ async function initDatabase() {
       await pool.query(`
         CREATE TABLE IF NOT EXISTS public.users (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          name TEXT,
           email TEXT UNIQUE NOT NULL,
           password_hash TEXT,
+          role TEXT NOT NULL DEFAULT 'USER',
           created_at TIMESTAMPTZ DEFAULT NOW()
         )
+      `);
+      await pool.query(`
+        ALTER TABLE public.users
+        ADD COLUMN IF NOT EXISTS name TEXT
+      `);
+      await pool.query(`
+        ALTER TABLE public.users
+        ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'USER'
+      `);
+      await pool.query(`
+        UPDATE public.users
+        SET role = 'USER'
+        WHERE role IS NULL OR BTRIM(role) = ''
+      `);
+      await pool.query(`
+        ALTER TABLE public.users
+        ALTER COLUMN role SET DEFAULT 'USER',
+        ALTER COLUMN role SET NOT NULL
       `);
       await pool.query(`
         ALTER TABLE public.users
@@ -141,6 +212,10 @@ app.get('/', (req, res) => {
   res.json({ message: 'API is running' });
 });
 
+app.get('/admin', (req, res) => {
+  res.type('html').send(adminDashboard);
+});
+
 app.get('/health', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW() as now');
@@ -162,11 +237,11 @@ app.post('/api/register', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'INSERT INTO public.users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, email, name',
+      'INSERT INTO public.users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, email, name, role',
       [ name, normalizedEmail, passwordHash]
     );
 
-    const token = signToken({ id: result.rows[0].id, email: result.rows[0].email, name: result.rows[0].name });
+    const token = signToken({ ...result.rows[0] });
 
     res.status(201).json({ success: true, token, user: result.rows[0] });
   } catch (error) {
@@ -193,6 +268,7 @@ app.post('/api/login', async (req, res) => {
         u.email,
         u.name,
         u.password_hash,
+        u.role,
         s.score_total
     FROM public.users u
     LEFT JOIN public.scores s
@@ -212,7 +288,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const token = signToken({ id: user.id, email: user.email, name: user.name });
+    const token = signToken({ id: user.id, email: user.email, name: user.name, role: user.role });
 
     res.json({
         success: true,
@@ -221,6 +297,7 @@ app.post('/api/login', async (req, res) => {
             id: user.id,
             name: user.name,
             email: user.email,
+            role: user.role,
             score: {
                 score_total: user.score_total ?? 0
             }
@@ -231,6 +308,40 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+app.post('/api/admin/login', async (req, res) => {
+  const { email, password } = req.body || {};
+
+  if (!email || !password) {
+    return res.status(400).json({ success: false, error: 'Email and password are required' });
+  }
+
+  try {
+    const result = await pool.query(
+      'SELECT id, name, email, password_hash, role FROM public.users WHERE email = $1',
+      [String(email).trim().toLowerCase()]
+    );
+
+    if (result.rows.length === 0 || !(await bcrypt.compare(password, result.rows[0].password_hash))) {
+      return res.status(401).json({ success: false, error: 'Email atau password salah' });
+    }
+
+    const admin = result.rows[0];
+    if (admin.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, error: 'Akun ini tidak memiliki akses admin' });
+    }
+
+    const token = signToken(admin);
+    res.json({
+      success: true,
+      token,
+      user: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
+    });
+  } catch (error) {
+    console.error('Admin login failed:', error);
+    res.status(500).json({ success: false, error: 'Unable to sign in' });
+  }
+});
+
 app.get('/api/me', authenticateToken, async (req, res) => {
     try {
         const result = await pool.query(`
@@ -238,6 +349,7 @@ app.get('/api/me', authenticateToken, async (req, res) => {
                 u.id,
                 u.name,
                 u.email,
+              u.role,
                 COALESCE(s.score_total, 0) AS score_total
             FROM public.users u
             LEFT JOIN public.scores s
@@ -260,6 +372,7 @@ app.get('/api/me', authenticateToken, async (req, res) => {
                 id: user.id,
                 name: user.name,
                 email: user.email,
+                role: user.role,
                 score: {
                     score_total: user.score_total
                 }
@@ -281,13 +394,15 @@ app.post('/api/logout', authenticateToken, (req, res) => {
     });
 });
 
-app.post('/api/score', authenticateToken, async (req, res) => {
-    const { score_total } = req.body;
+app.post('/api/score', authenticateToken, requireAdmin, async (req, res) => {
+  const { score_total, user_id } = req.body || {};
+  const targetUserId = user_id || req.user.sub;
+  const scoreTotal = Number(score_total);
 
-    if (score_total === undefined || isNaN(score_total)) {
+  if (!Number.isSafeInteger(scoreTotal) || scoreTotal < 0) {
         return res.status(400).json({
             success: false,
-            error: "score_total is required"
+      error: "score_total must be a non-negative integer"
         });
     }
 
@@ -299,7 +414,7 @@ app.post('/api/score', authenticateToken, async (req, res) => {
             ON CONFLICT(user_id)
             DO UPDATE
             SET score_total = EXCLUDED.score_total
-        `, [req.user.sub, score_total]);
+        `, [targetUserId, scoreTotal]);
 
         // Ambil data user beserta score terbaru
         const result = await pool.query(`
@@ -312,9 +427,13 @@ app.post('/api/score', authenticateToken, async (req, res) => {
             LEFT JOIN public.scores s
                 ON s.user_id = u.id
             WHERE u.id = $1
-        `, [req.user.sub]);
+        `, [targetUserId]);
 
         const user = result.rows[0];
+
+        if (!user) {
+          return res.status(404).json({ success: false, error: 'User not found' });
+        }
 
         res.json({
             success: true,
@@ -348,6 +467,100 @@ app.get('/api/scores', authenticateToken, async (req, res) => {
     res.json({ success: true, scores: result.rows });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/admin/vouchers', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, code, title, description, value_amount, points_cost, is_active, created_at
+      FROM public.vouchers
+      ORDER BY created_at DESC
+    `);
+    res.json({ success: true, vouchers: result.rows });
+  } catch (error) {
+    console.error('Admin voucher list failed:', error);
+    res.status(500).json({ success: false, error: 'Unable to load vouchers' });
+  }
+});
+
+app.post('/api/admin/vouchers', authenticateToken, requireAdmin, async (req, res) => {
+  const voucher = validateVoucher(req.body || {});
+  if (!voucher) {
+    return res.status(400).json({ success: false, error: 'Voucher fields are invalid' });
+  }
+
+  try {
+    const result = await pool.query(`
+      INSERT INTO public.vouchers (code, title, description, value_amount, points_cost, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, code, title, description, value_amount, points_cost, is_active, created_at
+    `, [voucher.code, voucher.title, voucher.description, voucher.valueAmount, voucher.pointsCost, voucher.isActive]);
+    res.status(201).json({ success: true, voucher: result.rows[0] });
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ success: false, error: 'Voucher code already exists' });
+    }
+    console.error('Admin voucher create failed:', error);
+    res.status(500).json({ success: false, error: 'Unable to create voucher' });
+  }
+});
+
+app.put('/api/admin/vouchers/:voucherId', authenticateToken, requireAdmin, async (req, res) => {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.voucherId)) {
+    return res.status(400).json({ success: false, error: 'Invalid voucher ID' });
+  }
+
+  const voucher = validateVoucher(req.body || {});
+  if (!voucher) {
+    return res.status(400).json({ success: false, error: 'Voucher fields are invalid' });
+  }
+
+  try {
+    const result = await pool.query(`
+      UPDATE public.vouchers
+      SET code = $2, title = $3, description = $4, value_amount = $5,
+          points_cost = $6, is_active = $7
+      WHERE id = $1
+      RETURNING id, code, title, description, value_amount, points_cost, is_active, created_at
+    `, [req.params.voucherId, voucher.code, voucher.title, voucher.description, voucher.valueAmount, voucher.pointsCost, voucher.isActive]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Voucher not found' });
+    }
+    res.json({ success: true, voucher: result.rows[0] });
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ success: false, error: 'Voucher code already exists' });
+    }
+    console.error('Admin voucher update failed:', error);
+    res.status(500).json({ success: false, error: 'Unable to update voucher' });
+  }
+});
+
+app.patch('/api/admin/vouchers/:voucherId/status', authenticateToken, requireAdmin, async (req, res) => {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.voucherId)) {
+    return res.status(400).json({ success: false, error: 'Invalid voucher ID' });
+  }
+  if (typeof req.body?.is_active !== 'boolean') {
+    return res.status(400).json({ success: false, error: 'is_active must be a boolean' });
+  }
+
+  try {
+    const result = await pool.query(`
+      UPDATE public.vouchers
+      SET is_active = $2
+      WHERE id = $1
+      RETURNING id, code, is_active
+    `, [req.params.voucherId, req.body.is_active]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Voucher not found' });
+    }
+    res.json({ success: true, voucher: result.rows[0] });
+  } catch (error) {
+    console.error('Admin voucher status update failed:', error);
+    res.status(500).json({ success: false, error: 'Unable to update voucher status' });
   }
 });
 
