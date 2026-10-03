@@ -27,6 +27,14 @@ Existing accounts receive the `USER` role when the role migration runs. Role cha
 
 Voucher management and score updates require `Authorization: Bearer <token>` from admin login. Standard users cannot write point balances. Deactivating a voucher preserves its redemption history.
 
+## User voucher API
+
+- `GET /api/vouchers` requires a user bearer token and lists only active vouchers that user has not redeemed during the current calendar month.
+- `POST /api/vouchers/:voucherId/redeem` claims a voucher. Each user can claim each voucher once per calendar month, using the `Asia/Jakarta` timezone. A repeat claim returns `409` with `VOUCHER_ALREADY_REDEEMED`.
+- `GET /api/vouchers/history` returns the authenticated user's redemption history.
+
+The monthly unique index is applied automatically when the API initializes the database schema.
+
 ## Run locally
 
 Set `DATABASE_URL` and a strong `JWT_SECRET` in `.env`, then run:

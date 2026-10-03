@@ -176,8 +176,15 @@ async function initDatabase() {
         )
       `);
       await pool.query(`
-        CREATE UNIQUE INDEX IF NOT EXISTS voucher_redemptions_user_voucher_unique
-        ON public.voucher_redemptions(user_id, voucher_id)
+        DROP INDEX IF EXISTS public.voucher_redemptions_user_voucher_unique
+      `);
+      await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS voucher_redemptions_user_voucher_month_unique
+        ON public.voucher_redemptions(
+          user_id,
+          voucher_id,
+          (DATE_TRUNC('month', redeemed_at AT TIME ZONE 'Asia/Jakarta'))
+        )
       `);
       await pool.query(`
         INSERT INTO public.vouchers (code, title, description, value_amount, points_cost)
@@ -613,14 +620,22 @@ app.patch('/api/admin/vouchers/:voucherId/status', authenticateToken, requireAdm
   }
 });
 
-app.get('/api/vouchers', async (req, res) => {
+app.get('/api/vouchers', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT id, code, title, description, value_amount, points_cost
-      FROM public.vouchers
-      WHERE is_active = TRUE
+      FROM public.vouchers v
+      WHERE v.is_active = TRUE
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.voucher_redemptions r
+          WHERE r.user_id = $1
+            AND r.voucher_id = v.id
+            AND DATE_TRUNC('month', r.redeemed_at AT TIME ZONE 'Asia/Jakarta')
+              = DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Jakarta')
+        )
       ORDER BY points_cost ASC
-    `);
+    `, [req.user.sub]);
 
     res.json({ success: true, vouchers: result.rows });
   } catch (error) {
@@ -656,6 +671,8 @@ app.post('/api/vouchers/:voucherId/redeem', authenticateToken, async (req, res) 
       SELECT 1
       FROM public.voucher_redemptions
       WHERE user_id = $1 AND voucher_id = $2
+        AND DATE_TRUNC('month', redeemed_at AT TIME ZONE 'Asia/Jakarta')
+          = DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Jakarta')
       LIMIT 1
     `, [req.user.sub, voucher.id]);
 
@@ -710,7 +727,7 @@ app.post('/api/vouchers/:voucherId/redeem', authenticateToken, async (req, res) 
     if (client) {
       await client.query('ROLLBACK').catch(() => {});
     }
-    if (error.code === '23505' && error.constraint === 'voucher_redemptions_user_voucher_unique') {
+    if (error.code === '23505' && error.constraint === 'voucher_redemptions_user_voucher_month_unique') {
       return res.status(409).json({
         success: false,
         error: 'Voucher has already been redeemed by this user',
