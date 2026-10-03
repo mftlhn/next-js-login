@@ -19,6 +19,7 @@ Existing accounts receive the `USER` role when the role migration runs. Role cha
 ## Admin API
 
 - `POST /api/admin/login` authenticates accounts with role `ADMIN`.
+- `GET /api/admin/users` lists all users with profile details, point balance, and redeemed vouchers. It never returns password hashes.
 - `GET /api/admin/vouchers` lists all vouchers.
 - `POST /api/admin/vouchers` creates a voucher.
 - `PUT /api/admin/vouchers/:voucherId` updates a voucher.

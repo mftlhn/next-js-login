@@ -176,6 +176,10 @@ async function initDatabase() {
         )
       `);
       await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS voucher_redemptions_user_voucher_unique
+        ON public.voucher_redemptions(user_id, voucher_id)
+      `);
+      await pool.query(`
         INSERT INTO public.vouchers (code, title, description, value_amount, points_cost)
         VALUES
           ('BELANJA-100K', 'Voucher Belanja IDR 100.000', 'Voucher belanja senilai IDR 100.000', 100000, 100),
@@ -470,6 +474,51 @@ app.get('/api/scores', authenticateToken, async (req, res) => {
   }
 });
 
+app.get('/api/admin/users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        u.id,
+        u.name,
+        u.email,
+        u.role,
+        u.created_at,
+        COALESCE(s.score_total, 0) AS score_total,
+        redemption.redeemed_voucher_count,
+        redemption.redeemed_vouchers
+      FROM public.users u
+      LEFT JOIN public.scores s ON s.user_id = u.id
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*)::INTEGER AS redeemed_voucher_count,
+          COALESCE(
+            JSONB_AGG(
+              JSONB_BUILD_OBJECT(
+                'redemption_id', r.id,
+                'voucher_id', v.id,
+                'code', v.code,
+                'title', v.title,
+                'value_amount', v.value_amount,
+                'points_spent', r.points_spent,
+                'redeemed_at', r.redeemed_at
+              ) ORDER BY r.redeemed_at DESC
+            ),
+            '[]'::JSONB
+          ) AS redeemed_vouchers
+        FROM public.voucher_redemptions r
+        JOIN public.vouchers v ON v.id = r.voucher_id
+        WHERE r.user_id = u.id
+      ) redemption ON TRUE
+      ORDER BY u.created_at DESC, u.id
+    `);
+
+    res.json({ success: true, users: result.rows });
+  } catch (error) {
+    console.error('Admin user list failed:', error);
+    res.status(500).json({ success: false, error: 'Unable to load users' });
+  }
+});
+
 app.get('/api/admin/vouchers', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -603,6 +652,22 @@ app.post('/api/vouchers/:voucherId/redeem', authenticateToken, async (req, res) 
     }
 
     const voucher = voucherResult.rows[0];
+    const previousRedemption = await client.query(`
+      SELECT 1
+      FROM public.voucher_redemptions
+      WHERE user_id = $1 AND voucher_id = $2
+      LIMIT 1
+    `, [req.user.sub, voucher.id]);
+
+    if (previousRedemption.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        success: false,
+        error: 'Voucher has already been redeemed by this user',
+        code: 'VOUCHER_ALREADY_REDEEMED',
+      });
+    }
+
     const balanceResult = await client.query(`
       UPDATE public.scores
       SET score_total = COALESCE(score_total, 0) - $2
@@ -644,6 +709,13 @@ app.post('/api/vouchers/:voucherId/redeem', authenticateToken, async (req, res) 
   } catch (error) {
     if (client) {
       await client.query('ROLLBACK').catch(() => {});
+    }
+    if (error.code === '23505' && error.constraint === 'voucher_redemptions_user_voucher_unique') {
+      return res.status(409).json({
+        success: false,
+        error: 'Voucher has already been redeemed by this user',
+        code: 'VOUCHER_ALREADY_REDEEMED',
+      });
     }
     console.error('Voucher redemption failed:', error);
     res.status(500).json({ success: false, error: 'Unable to redeem voucher' });
